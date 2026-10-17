@@ -1,0 +1,14 @@
+{
+  "name": "dispatch-functions",
+  "description": "Cloudflare Worker for the Rider Performance System (access-request email notifications)",
+  "private": true,
+  "main": "index.js",
+  "type": "module",
+  "engines": {
+    "node": "18"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "wrangler": "^3.0.0"
+  }
+}
