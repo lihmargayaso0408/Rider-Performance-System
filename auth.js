@@ -2,7 +2,7 @@
 // Backed by the Cloudflare Worker API (no Firebase).
 // Loaded as a module on every page (after cloudflare-config.js + cloudflare-api.js).
 
-const ALL_HUBS = ['Bauko', 'Buguias', 'Irisan', 'Itogon', 'Itogon Tuding', 'Kapangan', 'La Trinidad Pico', 'MB Atok'];
+const ALL_HUBS = ['Abra-Bucay', 'Bacarra', 'Badoc', 'Bangued', 'Bangui', 'Bantay', 'Bauko', 'Buguias', 'Candon', 'Dolores-Abra', 'Ilocos Sur', 'Ilocos Sur-Santa Lucia', 'Ilocos Sur-Santa Maria', 'Irisan', 'Itogon', 'Itogon Tuding', 'Kapangan', 'La Paz Abra', 'La Trinidad Pico', 'Laoag', 'MB Atok', 'Narvacan', 'North Laoag', 'San Nicolas', 'Santo Domingo', 'Tagudin'];
 const REMOVED_HUBS = ['MB Mankayan'];
 function isHubActive(hub) {
   return !REMOVED_HUBS.some(removed => removed.toLowerCase() === String(hub || '').trim().toLowerCase());
@@ -12,13 +12,10 @@ function sortHubs(hubs) {
 }
 const ALL_ACTIONS = ['upload', 'delete', 'download'];
 const ALL_PAGES = [
-  { key: 'riders', file: 'riders-agency.html' },
   { key: 'loss', file: 'loss-report.html' },
-  { key: 'pnr', file: 'pnr.html' },
-  { key: 'dtr', file: 'riders-dtr.html' },
-  { key: 'map', file: 'area-map.html' },
   { key: 'ranking', file: 'rider-ranking.html' },
-  { key: 'accounts', file: 'accounts.html' }
+  { key: 'accounts', file: 'accounts.html' },
+  { key: 'hub-location', file: 'hub-location.html' }
 ];
 const ADMIN_EMAILS = ['lihmar.gayaso@spxexpress.com'];
 

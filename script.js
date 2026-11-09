@@ -115,7 +115,7 @@ import { cachedFetchText } from './data-cache.js';
   /* ---------------- Storage helpers ---------------- */
   // Hubs are now loaded dynamically from the Cloudflare Worker (see Auth.getHubs()).
   // The hardcoded list is retained as a fallback when the Worker is unavailable.
-  const HUB_FALLBACK = ['Bauko','Buguias','Irisan','Itogon','Itogon Tuding','Kapangan','La Trinidad Pico','MB Atok'];
+  const HUB_FALLBACK = ['Abra-Bucay','Bacarra','Badoc','Bangued','Bangui','Bantay','Bauko','Buguias','Candon','Dolores-Abra','Ilocos Sur','Ilocos Sur-Santa Lucia','Ilocos Sur-Santa Maria','Irisan','Itogon','Itogon Tuding','Kapangan','La Paz Abra','La Trinidad Pico','Laoag','MB Atok','Narvacan','North Laoag','San Nicolas','Santo Domingo','Tagudin'];
   const REMOVED_HUBS = ['MB Mankayan'];
 
   function isHubActive(hub) {
@@ -334,7 +334,6 @@ function getExportDates(hub){
     hubIndex: Object.fromEntries(HUB_FALLBACK.map(h => [h, []])),
     currentHub: 'All',
     currentDate: null,
-    frequency: 'weekly',
     rows: [],
     summaries: Object.fromEntries(HUB_FALLBACK.map(h => [h, []])),
     sortKey: 'deliverySuccessRate',
@@ -346,6 +345,9 @@ function getExportDates(hub){
     trendChart: null,
     weekPickerMonth: new Date(),
     weekPickerSelectedDate: null,
+    dashMap: null,
+    dashMapLayer: null,
+    dashMapTileLayer: null,
   };
 
   const $ = sel => document.querySelector(sel);
@@ -531,6 +533,7 @@ function fmtWeekLabel(d){
 
   function setActiveTab(hub){
     state.currentHub = hub;
+    state.currentDate = null; // always default to latest data for the selected hub
     const valueEl = $('#hubDropdownValue');
     const trigger = $('#hubDropdownTrigger');
     if(valueEl) valueEl.textContent = hub==='All' ? 'All Hubs' : hub;
@@ -574,15 +577,6 @@ function allowedHubs(){
       if(!selDate) return null;
       const hd = state.hubIndex[hub] || [];
       if(!hd.length) return null;
-      if(state.frequency === 'monthly'){
-        const sel = new Date(selDate + 'T00:00:00');
-        const inMonth = hd.filter(d => {
-          const m = new Date(d + 'T00:00:00');
-          return m.getFullYear() === sel.getFullYear() && m.getMonth() === sel.getMonth();
-        });
-        return inMonth.length ? latestDate(inMonth) : latestDate(hd);
-      }
-      // weekly
       const wk = toISODate(startOfWeek(selDate));
       const inWeek = hd.filter(d => toISODate(startOfWeek(d)) === wk);
       return inWeek.length ? latestDate(inWeek) : latestDate(hd);
@@ -594,13 +588,26 @@ function allowedHubs(){
     if(menu){
       menu.innerHTML = '';
       const allLabel = allowed.length > 1 ? 'All Hubs' : (allowed[0] || 'All');
+
+      const search = document.createElement('input');
+      search.type = 'text';
+      search.placeholder = 'Search hubs…';
+      search.className = 'hub-dropdown-search';
+      search.setAttribute('aria-label', 'Filter hubs');
+      menu.appendChild(search);
+
+      const optionsWrap = document.createElement('div');
+      optionsWrap.className = 'hub-dropdown-options';
+      optionsWrap.setAttribute('role', 'listbox');
+
       const allOpt = document.createElement('button');
       allOpt.type = 'button';
       allOpt.className = 'hub-dropdown-option active';
       allOpt.dataset.value = 'All';
       allOpt.textContent = allLabel;
       allOpt.setAttribute('role', 'option');
-      menu.appendChild(allOpt);
+      optionsWrap.appendChild(allOpt);
+
       allowed.forEach(hub => {
         const opt = document.createElement('button');
         opt.type = 'button';
@@ -608,9 +615,40 @@ function allowedHubs(){
         opt.dataset.value = hub;
         opt.textContent = hub;
         opt.setAttribute('role', 'option');
-        menu.appendChild(opt);
+        optionsWrap.appendChild(opt);
       });
+
+      menu.appendChild(optionsWrap);
+
+      function renderHubOptions(filter){
+        const f = (filter || '').toLowerCase();
+        optionsWrap.querySelectorAll('.hub-dropdown-option').forEach(opt=>{
+          opt.style.display = opt.textContent.toLowerCase().includes(f) ? '' : 'none';
+        });
+      }
+      renderHubOptions('');
+
+      search.addEventListener('input', (e)=>{ renderHubOptions(e.target.value); });
+      search.addEventListener('click', (e)=>{ e.stopPropagation(); });
     }
+
+    // Keep native hub <select> modals in sync with the full hub list.
+    ['hubSelect','downloadHubSelect'].forEach(id=>{
+      const sel = $(id);
+      if(!sel) return;
+      sel.innerHTML = '';
+      allowed.forEach(hub=>{
+        const o = document.createElement('option');
+        o.value = hub; o.textContent = hub;
+        sel.appendChild(o);
+      });
+      if(id === 'downloadHubSelect'){
+        const o = document.createElement('option');
+        o.value = 'All'; o.textContent = 'Both hubs';
+        sel.appendChild(o);
+      }
+    });
+
     state.currentHub = allowed.length>1 ? 'All' : (allowed[0]||'All');
     setActiveTab(state.currentHub);
 
@@ -623,13 +661,10 @@ function allowedHubs(){
     // Hide drawer page buttons the user isn't allowed to access.
     const pages = perms.pages || Auth.ALL_PAGES.map(p=>p.key);
     const pageBtnMap = {
-      'riders': '#openRidersPageBtn',
       'loss': '#openLossReportBtn',
-      'pnr': '#openPnrPageBtn',
-      'dtr': '#openDtrPageBtn',
       'ranking': '#openRankingPageBtn',
-      'map': '#openAreaMapBtn',
-      'accounts': '#openAccountsBtn'
+      'accounts': '#openAccountsBtn',
+      'hub-location': '#openHubLocationBtn'
     };
     Object.keys(pageBtnMap).forEach(function(key){
       const sel = pageBtnMap[key];
@@ -645,6 +680,11 @@ function allowedHubs(){
       if(mb){
         mb.style.display='';
         mb.addEventListener('click', ()=>{ closeSettingsMenu(); window.location.href='accounts.html'; });
+      }
+      const hl = $('#openHubLocationBtn');
+      if(hl){
+        hl.style.display='';
+        hl.addEventListener('click', ()=>{ closeSettingsMenu(); window.location.href='hub-location.html'; });
       }
       const nh = $('#openNewHubBtn');
       if(nh){
@@ -905,7 +945,8 @@ function allowedHubs(){
   function openCalendar(){
     const wrap = $('#datePickerWrap');
     const btn = $('#datePickerBtn');
-    if(!wrap) return;
+    const dropdown = $('#datePickerDropdown');
+    if(!wrap || !dropdown) return;
     wrap.classList.add('open');
     btn.setAttribute('aria-expanded','true');
     if(state.currentDate){
@@ -918,13 +959,42 @@ function allowedHubs(){
       calendarMonth = now.getMonth();
     }
     renderCalendar();
+
+    // Position fixed dropdown relative to the button, keeping it fully in viewport
+    const rect = btn.getBoundingClientRect();
+    const dWidth = dropdown.offsetWidth || 280;
+    const dHeight = dropdown.offsetHeight || 340;
+    const spaceBelow = window.innerHeight - rect.bottom - 8;
+    const spaceAbove = rect.top - 8;
+
+    // Horizontal: align left with button, flip right if needed
+    let left = rect.left;
+    if(left + dWidth > window.innerWidth - 8){
+      left = window.innerWidth - dWidth - 8;
+    }
+    if(left < 8) left = 8;
+
+    if(spaceBelow >= dHeight || spaceBelow >= spaceAbove){
+      dropdown.style.top = (rect.bottom + 8) + 'px';
+      dropdown.style.transformOrigin = 'top center';
+    } else {
+      dropdown.style.top = (rect.top - dHeight - 8) + 'px';
+      dropdown.style.transformOrigin = 'bottom center';
+    }
+    dropdown.style.left = left + 'px';
   }
 
   function closeCalendar(){
     const wrap = $('#datePickerWrap');
     const btn = $('#datePickerBtn');
+    const dropdown = $('#datePickerDropdown');
     if(wrap) wrap.classList.remove('open');
     if(btn) btn.setAttribute('aria-expanded','false');
+    if(dropdown){
+      dropdown.style.top = '';
+      dropdown.style.left = '';
+      dropdown.style.transformOrigin = '';
+    }
   }
 
   function toggleCalendar(){
@@ -1053,11 +1123,12 @@ function animateCountUp(el, target, isPct){
     const sum = key => rows.reduce((a,r)=>a+r[key],0);
 
     const kpis = [
-      {label:'Riders on manifest', value: fmtNum(rows.length), sub:`${active.length} active`, anim:'num'},
+      {label:'Riders on manifest', value: fmtNum(active.length), anim:'num'},
       {label:'Delivery success rate', value: fmtPct(avg('deliverySuccessRate')), cls: avg('deliverySuccessRate')>=90?'teal':(avg('deliverySuccessRate')<75?'brick':'' ), anim:'pct'},
       {label:'Attendance rate', value: fmtPct(avg('attendanceRate')), anim:'pct'},
-      {label:'Parcels delivered', value: fmtNum(sum('parcelsDelivered')), sub:`${fmtNum(sum('parcelsAssigned'))} assigned`, anim:'num'},
+      {label:'Parcels delivered', value: fmtNum(sum('parcelsDelivered')), anim:'num'},
       {label:'Parcels on hold', value: fmtNum(sum('parcelsOnHold')), cls: sum('parcelsOnHold')>0?'brick':'', anim:'num'},
+      {label:'Total parcels assigned', value: fmtNum(sum('parcelsAssigned')), anim:'num'},
     ];
 
     let html = '<div class="kpis">';
@@ -1068,6 +1139,9 @@ function animateCountUp(el, target, isPct){
 
 html += '<div class="panels">';
     html += `<div class="panel"><h3>Vehicle types</h3><p class="hint">Rider count by vehicle type</p><div id="trendWrap"></div></div>`;
+    html += `<div class="panel dashboard-map-panel clickable-panel" id="hubMapPanel" role="link" tabindex="0" aria-label="Open hub location map">
+      <div class="dashboard-map-box" id="dashHubMapBox"><div id="dashHubMap"></div></div>
+    </div>`;
     html += '</div>';
 
 html += '<div class="strip">';
@@ -1099,6 +1173,7 @@ html += '<div class="strip">';
     });
 
 await renderTrend();
+    await renderDashMap();
     renderTopBottom(rows);
     setupTableControls(rows);
     renderTable();
@@ -1159,6 +1234,144 @@ await renderTrend();
     scrollEl.addEventListener('scroll', updateHint);
     window.addEventListener('resize', updateHint);
     setTimeout(updateHint, 0);
+  }
+
+  const HUB_COORDS = {
+    'Abra-Bucay': { lat: 17.54446322842846, lng: 120.7045626490105 },
+    'Bacarra': { lat: 18.269979007505793, lng: 120.60074583755949 },
+    'Badoc': { lat: 17.928801908586507, lng: 120.49239936710421 },
+    'Bangued': { lat: 17.594331744718165, lng: 120.61074196277289 },
+    'Bangui': { lat: 18.523454604839404, lng: 120.74589168248409 },
+    'Bantay': { lat: 17.589541346134034, lng: 120.41542646712173 },
+    'Bauko': { lat: 16.982200521109455, lng: 120.85290738245601 },
+    'Buguias': { lat: 16.810248946780597, lng: 120.82667944064907 },
+    'Candon': { lat: 17.193642371786282, lng: 120.43997919546042 },
+    'Dolores-Abra': { lat: 17.628883283224585, lng: 120.7279614266495 },
+    'Ilocos Sur-Santa Lucia': { lat: 17.113219352556087, lng: 120.44914608060348 },
+    'Ilocos Sur-Santa Maria': { lat: 17.365473705667814, lng: 120.48109405944436 },
+    'Irisan': { lat: 16.40605606033974, lng: 120.57641595175478 },
+    'Itogon': { lat: 16.36044606201804, lng: 120.63445890942711 },
+    'Itogon Tuding': { lat: 16.410220644695205, lng: 120.64207207451898 },
+    'Kapangan': { lat: 16.57547659520923, lng: 120.59649586895817 },
+    'La Paz Abra': { lat: 17.700786733350526, lng: 120.68681817485162 },
+    'La Trinidad Pico': { lat: 16.451761210816514, lng: 120.5825152861779 },
+    'Laoag': { lat: 18.18577302030684, lng: 120.57717140760387 },
+    'MB Atok': { lat: 16.6000, lng: 120.7500 },
+    'Narvacan': { lat: 17.439100640333923, lng: 120.46968792479134 },
+    'North Laoag': { lat: 18.204800770933083, lng: 120.61881030318959 },
+    'San Nicolas': { lat: 18.065335082050474, lng: 120.5616059266577 },
+    'Santo Domingo': { lat: 17.6167, lng: 120.4000 },
+    'Tagudin': { lat: 16.96809758139777, lng: 120.44889541129207 }
+  };
+  const LUZON_BOUNDS = [[14.2, 119.6], [19.1, 122.8]];
+  const LIGHT_TILES = 'https://tile.openstreetmap.org/{z}/{x}/{y}.png';
+  const DARK_TILES = 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png';
+  const FALLBACK_TILES = 'https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png';
+  const NO_KEY_TILES = [
+    'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+    'https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png',
+    'https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png'
+  ];
+  let dashLeafletReady = null;
+  function ensureDashLeaflet(){
+    if (typeof L !== 'undefined') return Promise.resolve();
+    if (dashLeafletReady) return dashLeafletReady;
+    dashLeafletReady = new Promise((resolve) => {
+      const tryLoad = (url, next) => {
+        const s = document.createElement('script');
+        s.src = url; s.onload = () => resolve(true);
+        s.onerror = () => { if(next) next(); else resolve(false); };
+        document.head.appendChild(s);
+      };
+      tryLoad('https://unpkg.com/leaflet@1.9.4/dist/leaflet.js', () =>
+        tryLoad('https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js'));
+    });
+    return dashLeafletReady;
+  }
+
+  async function renderDashMap(){
+    const box = document.getElementById('dashHubMap');
+    const panel = document.getElementById('hubMapPanel');
+    if(!box || !panel) return;
+
+    const openMap = () => {
+      const hub = state.currentHub || 'All';
+      const q = (hub && hub !== 'All') ? ('?hub=' + encodeURIComponent(hub)) : '';
+      window.location.href = 'hub-location.html' + q;
+    };
+    if(!panel.dataset.wired){
+      panel.dataset.wired = '1';
+      panel.addEventListener('click', openMap);
+      panel.addEventListener('keydown', e => { if(e.key==='Enter'||e.key===' ') { e.preventDefault(); openMap(); } });
+    }
+
+    if(typeof L === 'undefined'){
+      await ensureDashLeaflet();
+      if(typeof L === 'undefined'){
+        box.innerHTML = '<div style="height:100%;min-height:180px;display:flex;align-items:center;justify-content:center;color:#8B9099;font-size:12px;text-align:center;padding:10px;">Map unavailable — click to open</div>';
+        return;
+      }
+    }
+
+    try {
+      // (re)bind to current element after #content re-renders
+      if(state.dashMap && state.dashMap.getContainer() !== box){
+        try{ state.dashMap.remove(); }catch(e){}
+        state.dashMap = null; state.dashMapLayer = null; state.dashMapTileLayer = null;
+      }
+      if(!state.dashMap){
+        box.innerHTML = '';
+        state.dashMap = L.map('dashHubMap', {
+          zoomControl: false, attributionControl: false,
+          dragging: false, scrollWheelZoom: false, doubleClickZoom: false, boxZoom: false,
+          keyboard: false, tap: false, touchZoom: false
+        });
+        let tileErrs = 0;
+        const srcs = document.body.classList.contains('dark') ? [DARK_TILES, ...NO_KEY_TILES] : NO_KEY_TILES;
+        let srcIdx = 0;
+        const mountTiles = () => {
+          if(state.dashMapTileLayer) try{ state.dashMap.removeLayer(state.dashMapTileLayer); }catch(e){}
+          tileErrs = 0;
+          state.dashMapTileLayer = L.tileLayer(srcs[srcIdx], { maxZoom: 19, crossOrigin: true, errorTileUrl: '' }).addTo(state.dashMap);
+          state.dashMapTileLayer.on('tileerror', () => {
+            tileErrs++;
+            if(tileErrs > 3 && srcIdx < srcs.length - 1){ srcIdx++; mountTiles(); }
+            if(tileErrs > 6 && srcIdx >= srcs.length - 1){ try{ box.classList.add('tiles-failed'); }catch(e){} }
+          });
+          state.dashMapTileLayer.on('load', () => { box.dataset.tiles = 'ok'; box.classList.remove('tiles-failed'); });
+          state.dashMapTileLayer.bringToBack();
+        };
+        mountTiles();
+        state.dashMapLayer = L.layerGroup().addTo(state.dashMap);
+        box.classList.remove('tiles-failed');
+        const old = box.querySelector('.dash-map-note'); if(old) old.remove();
+      }
+
+      const dark = document.body.classList.contains('dark');
+      const tileUrl = dark ? DARK_TILES : LIGHT_TILES;
+      if(state.dashMapTileLayer && state.dashMapTileLayer._url !== tileUrl){
+        state.dashMap.removeLayer(state.dashMapTileLayer);
+        state.dashMapTileLayer = L.tileLayer(tileUrl, { maxZoom: 19, crossOrigin: true }).addTo(state.dashMap);
+        state.dashMapTileLayer.bringToBack();
+      }
+
+      state.dashMapLayer.clearLayers();
+      const hub = state.currentHub || 'All';
+      const bounds = L.latLngBounds(LUZON_BOUNDS[0], LUZON_BOUNDS[1]);
+      if(hub !== 'All' && HUB_COORDS[hub]){
+        const c = HUB_COORDS[hub];
+        L.circleMarker([c.lat, c.lng], { radius: 8, fillColor:'#00C878', fillOpacity:1, color:'#fff', weight:2 }).addTo(state.dashMapLayer);
+        state.dashMap.setView([c.lat, c.lng], 13, { animate: false });
+      } else {
+        Object.values(HUB_COORDS).forEach(c => L.circleMarker([c.lat, c.lng], { radius: 4, fillColor:'#00C878', fillOpacity:0.9, color:'#fff', weight:1 }).addTo(state.dashMapLayer));
+        state.dashMap.fitBounds(bounds, { padding: [8, 8], animate: false });
+      }
+      const fix = () => { try{ if(state.dashMap) state.dashMap.invalidateSize(); }catch(e){} };
+      setTimeout(fix, 0); setTimeout(fix, 80); setTimeout(fix, 250); setTimeout(fix, 600);
+      requestAnimationFrame(fix);
+    } catch (e) {
+      box.innerHTML = '<div style="height:100%;min-height:180px;display:flex;align-items:center;justify-content:center;color:#8B9099;font-size:12px;text-align:center;padding:10px;">Click to open map</div>';
+    }
   }
 
   async function renderTrend(){
@@ -1324,7 +1537,7 @@ if(c.type==='num1') return `<td class="num">${(r[c.key]||0).toFixed(1)}</td>`;
     }
   }
 
-  let pendingFile = null, pendingParsedRows = null;
+  let pendingFiles = [];
 
   function startOfWeek(date){
     const d = new Date(date);
@@ -1391,8 +1604,8 @@ cells.forEach((day, index)=>{
 function openModal(){
      $('#overlay').classList.add('show');
      $('#modalMsg').textContent = '';
-     $('#dropText').innerHTML = '<b>Click to choose</b> or drag a .csv file here';
-     pendingFile = null; pendingParsedRows = null;
+     $('#dropText').innerHTML = '<b>Click to choose</b> or drag .csv files here';
+     pendingFiles = [];
      $('#confirmUpload').disabled = true;
       const today = new Date();
       if(!$('#dateInput').value){ $('#dateInput').value = toISODate(today); }
@@ -1403,143 +1616,142 @@ function openModal(){
      const hubs = currentHubs();
       if(hubs.includes(state.currentHub)) $('#hubSelect').value = state.currentHub;
       else if(hubs.length) $('#hubSelect').value = hubs[0];
-      checkBridge();
     }
   function closeModal(){ $('#overlay').classList.remove('show'); }
 
-  function handleFile(file){
-    pendingFile = file;
-    pendingParsedRows = null;
-    $('#confirmUpload').disabled = true;
-    $('#dropText').innerHTML = `<b>${escapeHtml(file.name)}</b> selected`;
-    $('#modalMsg').textContent = 'Reading file…';
-    $('#modalMsg').className = 'modal-msg';
-    const m = file.name.match(/(\d{4}-\d{2}-\d{2})/);
-    if(m) {
-      const picked = new Date(m[1] + 'T00:00:00');
-      $('#dateInput').value = toISODate(picked);
-      state.weekPickerSelectedDate = toISODate(picked);
-      state.weekPickerMonth = new Date(picked.getFullYear(), picked.getMonth(), 1);
-      renderWeekPicker();
+  function extractDateFromFilename(fileName, hub){
+    let base = fileName.replace(/\.csv$/i, '').trim();
+    if(base.toLowerCase().startsWith(hub.toLowerCase() + ' ')){
+      base = base.slice(hub.length + 1).trim();
     }
+    const m = base.match(/(\d{4}-\d{2}-\d{2})/);
+    if(m) return m[1];
+    const parsed = new Date(base + ' ' + new Date().getFullYear());
+    if(!isNaN(parsed.getTime())) return toISODate(parsed);
+    return null;
+  }
 
-    const reader = new FileReader();
-    reader.onload = function(e){
-      try{
-        const res = parseCSVText(e.target.result);
-        pendingParsedRows = mapRows(res);
-        if(pendingParsedRows.length===0){
-          $('#modalMsg').textContent = 'No rider rows were found in this file. Make sure it\'s the unedited performance report CSV.';
-          $('#modalMsg').className = 'modal-msg err';
-          $('#confirmUpload').disabled = true;
-        } else {
-          $('#modalMsg').textContent = `Parsed ${pendingParsedRows.length} rider rows.`;
-          $('#modalMsg').className = 'modal-msg ok';
-          $('#confirmUpload').disabled = false;
+  function handleFiles(files){
+    if(!files || !files.length) return;
+    const hub = $('#hubSelect').value;
+    pendingFiles = [];
+    let totalRows = 0;
+    let failed = 0;
+    const fileList = [];
+
+    for(const file of Array.from(files)){
+      const reader = new FileReader();
+      reader.file = file;
+      reader.onload = function(e){
+        try{
+          const res = parseCSVText(e.target.result);
+          const rows = mapRows(res);
+          const date = extractDateFromFilename(file.name, hub) || $('#dateInput').value || new Date().toISOString().slice(0,10);
+          if(rows.length === 0){
+            failed++;
+          } else {
+            pendingFiles.push({ file: file.name, date, rows });
+            totalRows += rows.length;
+          }
+        }catch(err){
+          failed++;
         }
-      }catch(err){
-        $('#modalMsg').textContent = 'Could not read that file — check it is the standard performance report CSV. (' + (err && err.message ? err.message : 'parse error') + ')';
-        $('#modalMsg').className = 'modal-msg err';
-        $('#confirmUpload').disabled = true;
+        fileList.push(file.name);
+        if(fileList.length === files.length){
+          finalizeHandle(totalRows, failed);
+        }
+      };
+      reader.onerror = function(){
+        failed++;
+        fileList.push(file.name);
+        if(fileList.length === files.length){
+          finalizeHandle(totalRows, failed);
+        }
+      };
+      try{ reader.readAsText(file); }catch(err){
+        failed++;
+        fileList.push(file.name);
+        if(fileList.length === files.length){
+          finalizeHandle(totalRows, failed);
+        }
       }
-    };
-    reader.onerror = function(){
-      $('#modalMsg').textContent = 'Could not read that file from disk. Try selecting it again.';
-      $('#modalMsg').className = 'modal-msg err';
-      $('#confirmUpload').disabled = true;
-    };
-    try{
-      reader.readAsText(file);
-    }catch(err){
-      $('#modalMsg').textContent = 'Could not open that file. (' + (err && err.message ? err.message : 'unknown error') + ')';
-      $('#modalMsg').className = 'modal-msg err';
     }
   }
 
-  async function confirmUpload(){
-    if(!pendingParsedRows) return;
+  function finalizeHandle(totalRows, failed){
     const hub = $('#hubSelect').value;
-    const date = $('#dateInput').value;
-     if(!date){ $('#modalMsg').textContent='Pick a date.'; $('#modalMsg').className='modal-msg err'; return; }
+    $('#confirmUpload').disabled = pendingFiles.length === 0;
+    if(pendingFiles.length === 0){
+      $('#dropText').innerHTML = `<b>No valid CSV files.</b>`;
+      $('#modalMsg').textContent = failed ? `Could not parse ${failed} file(s).` : 'No files selected.';
+      $('#modalMsg').className = 'modal-msg err';
+      return;
+    }
+    const dates = [...new Set(pendingFiles.map(p=>p.date))].sort();
+    $('#dropText').innerHTML = `<b>${pendingFiles.length}</b> file(s) selected for <b>${escapeHtml(hub)}</b> — dates: ${dates.join(', ')}`;
+    $('#modalMsg').textContent = `Parsed ${totalRows} rider row(s) across ${pendingFiles.length} file(s).` + (failed ? ` (${failed} failed)` : '');
+    $('#modalMsg').className = 'modal-msg ok';
+  }
+
+  async function confirmUpload(){
+    if(!pendingFiles.length) return;
+    const hub = $('#hubSelect').value;
 
     const btn = $('#confirmUpload');
     btn.disabled = true;
     btn.textContent = 'Adding…';
 
-    try{
-      await saveSnapshot(hub, date, pendingParsedRows);
+    let okCount = 0;
+    let failCount = 0;
+    const summaryByHub = {};
 
-      if(!state.hubIndex[hub]) state.hubIndex[hub] = [];
-      if(!state.hubIndex[hub].includes(date)){
-        state.hubIndex[hub].push(date);
-        state.hubIndex[hub].sort();
+    try{
+      for(const pf of pendingFiles){
+        const date = pf.date;
+        if(!date){
+          failCount++;
+          continue;
+        }
+        await saveSnapshot(hub, date, pf.rows);
+
+        if(!state.hubIndex[hub]) state.hubIndex[hub] = [];
+        if(!state.hubIndex[hub].includes(date)){
+          state.hubIndex[hub].push(date);
+          state.hubIndex[hub].sort();
+        }
+
+        const daySummary = daySummaryFromRows(date, pf.rows);
+        if(!summaryByHub[hub]) summaryByHub[hub] = [];
+        summaryByHub[hub] = summaryByHub[hub].filter(s=>s.date!==date);
+        summaryByHub[hub].push(daySummary);
+        summaryByHub[hub].sort((a,b)=>a.date<b.date?-1:1);
+
+        okCount++;
       }
       await saveIndex(state.hubIndex);
 
-      const daySummary = daySummaryFromRows(date, pendingParsedRows);
-      let summaryArr = state.summaries[hub]||[];
-      summaryArr = summaryArr.filter(s=>s.date!==date);
-      summaryArr.push(daySummary);
-      summaryArr.sort((a,b)=>a.date<b.date?-1:1);
-      state.summaries[hub] = summaryArr;
-      await saveSummaryArr(hub, summaryArr);
+      for(const h of Object.keys(summaryByHub)){
+        let summaryArr = state.summaries[h]||[];
+        summaryArr = summaryArr.filter(s=> !summaryByHub[h].some(ns=>ns.date===s.date));
+        summaryArr = summaryArr.concat(summaryByHub[h]);
+        summaryArr.sort((a,b)=>a.date<b.date?-1:1);
+        state.summaries[h] = summaryArr;
+        await saveSummaryArr(h, summaryArr);
+      }
 
       closeModal();
-       showToast(`Added <b>${hub}</b> — ${fmtDate(date)} (${pendingParsedRows.length} riders)`);
+       showToast(`Added ${okCount} file(s) for <b>${escapeHtml(hub)}</b>.` + (failCount ? ` ${failCount} failed.` : ''));
 
       setActiveTab(hub);
-      state.currentDate = date;
+      if(pendingFiles.length) state.currentDate = pendingFiles[pendingFiles.length-1].date;
       await refreshView();
     }catch(err){
-      $('#modalMsg').textContent = 'Could not save this upload: ' + (err && err.message ? err.message : 'unknown error');
+      $('#modalMsg').textContent = 'Could not save uploads: ' + (err && err.message ? err.message : 'unknown error');
       $('#modalMsg').className = 'modal-msg err';
     }finally{
       btn.disabled = false;
       btn.textContent = 'Add to dashboard';
     }
-  }
-
-  function checkBridge(){
-    const status = $('#spxBridgeStatus');
-    const btn = $('#activateBridgeBtn');
-    const pullBtn = $('#pullSpxBtn');
-    if(typeof window.baukoBridgePull === 'function'){
-      if(status){ status.textContent = 'Data pull: active'; status.style.color = 'var(--teal)'; }
-      if(pullBtn) pullBtn.disabled = false;
-      if(btn) btn.style.display = 'none';
-    } else {
-      if(status){ status.textContent = 'Data pull: not installed'; status.style.color = 'var(--brick)'; }
-      if(pullBtn) pullBtn.disabled = true;
-      if(btn) btn.style.display = 'inline-block';
-    }
-  }
-
-  function activateBridge(){
-    checkBridge();
-    if(typeof window.baukoBridgePull === 'function'){
-      showToast('Data pull is active.');
-    } else {
-      showToast('Load the BAUKO SPX Bridge extension in Chrome (chrome://extensions → Load unpacked, point at bauko-spx-bridge/).');
-    }
-  }
-
-  function pullFromSpx(){
-    const startDate = $('#dateInput').value || new Date().toISOString().slice(0, 10);
-    if(!startDate) return;
-    if(typeof window.baukoBridgePull !== 'function'){
-      showToast('Data pull extension not installed.');
-      return;
-    }
-    const hub = $('#hubSelect').value;
-    showToast('Pulling data…');
-    window.baukoBridgePull(hub, startDate)
-      .then(function(){
-        showToast('Data pulled.');
-        closeModal();
-      })
-      .catch(function(e){
-        showToast('Data pull failed: ' + (e && e.message ? e.message : e));
-      });
   }
 
   function showToast(html){
@@ -1558,16 +1770,8 @@ function openModal(){
 
       // Resolve the selected date to the actual stored snapshot date(s)
       let targetDates = [];
-      if(state.frequency === 'monthly'){
-        const sel = new Date(state.currentDate + 'T00:00:00');
-        targetDates = allDatesForCurrentHub().filter(d => {
-          const m = new Date(d + 'T00:00:00');
-          return m.getFullYear() === sel.getFullYear() && m.getMonth() === sel.getMonth();
-        });
-      } else {
-        const wk = toISODate(startOfWeek(state.currentDate));
-        targetDates = allDatesForCurrentHub().filter(d => toISODate(startOfWeek(d)) === wk);
-      }
+      const wk = toISODate(startOfWeek(state.currentDate));
+      targetDates = allDatesForCurrentHub().filter(d => toISODate(startOfWeek(d)) === wk);
 
 const deleteSet = new Set(targetDates);
       const hubsToDelete = (state.currentHub === 'All' ? currentHubs() : [state.currentHub]).filter(hub => {
@@ -1960,7 +2164,8 @@ function closeSettingsMenu(){
         state.currentDate = null;
         await refreshView();
       });
-      document.addEventListener('click', ()=>{
+      document.addEventListener('click', (e)=>{
+        if(menu && menu.contains(e.target)) return;
         closeHubDropdownMenu();
       });
     }
@@ -1988,14 +2193,6 @@ function closeSettingsMenu(){
        const wrap = $('#datePickerWrap');
        if(wrap && !wrap.contains(e.target)) closeCalendar();
      });
-
-      $('#freqToggle').addEventListener('click', async e=>{
-        const btn = e.target.closest('.freq-btn');
-        if(!btn || btn.classList.contains('active')) return;
-        state.frequency = btn.dataset.freq;
-        $$('.freq-btn').forEach(b=>b.classList.toggle('active', b===btn));
-        await refreshView();
-      });
 
 function openSettingsMenu(){
       const drawer = $('#settingsDrawer');
@@ -2092,29 +2289,13 @@ const wheelBtn = $('#settingsToggle');
       closeSettingsMenu();
       openDownloadModal();
     });
-$('#openRidersPageBtn').addEventListener('click', ()=>{
-      closeSettingsMenu();
-      window.location.href = 'riders-agency.html';
-    });
 $('#openLossReportBtn').addEventListener('click', ()=>{
       closeSettingsMenu();
       window.location.href = 'loss-report.html';
     });
-    $('#openPnrPageBtn').addEventListener('click', ()=>{
-      closeSettingsMenu();
-      window.location.href = 'pnr.html';
-    });
-    $('#openDtrPageBtn').addEventListener('click', ()=>{
-      closeSettingsMenu();
-      window.location.href = 'riders-dtr.html';
-    });
-    $('#openRankingPageBtn').addEventListener('click', ()=>{
+$('#openRankingPageBtn').addEventListener('click', ()=>{
       closeSettingsMenu();
       window.location.href = 'rider-ranking.html';
-    });
-    $('#openAreaMapBtn').addEventListener('click', ()=>{
-      closeSettingsMenu();
-      window.location.href = 'area-map.html';
     });
     $('#cancelUpload').addEventListener('click', closeModal);
     $('#weekPrevBtn').addEventListener('click', ()=>{
@@ -2203,16 +2384,14 @@ $('#downloadHubSelect').addEventListener('change', populateDownloadWeekOptions);
       });
     });
 
-    $('#fileInput').addEventListener('change', e=>{ if(e.target.files[0]) handleFile(e.target.files[0]); });
+    $('#fileInput').addEventListener('change', e=>{ if(e.target.files.length) handleFiles(e.target.files); });
     $('#dropZone').addEventListener('dragover', e=>{ e.preventDefault(); $('#dropZone').classList.add('drag'); });
     $('#dropZone').addEventListener('dragleave', ()=>$('#dropZone').classList.remove('drag'));
     $('#dropZone').addEventListener('drop', e=>{
       e.preventDefault(); $('#dropZone').classList.remove('drag');
-      if(e.dataTransfer.files[0]) handleFile(e.dataTransfer.files[0]);
+      if(e.dataTransfer.files.length) handleFiles(e.dataTransfer.files);
     });
     $('#confirmUpload').addEventListener('click', confirmUpload);
-    $('#pullSpxBtn').addEventListener('click', pullFromSpx);
-    $('#activateBridgeBtn').addEventListener('click', activateBridge);
     $('#resetBtn').addEventListener('click', resetAll);
 
     $('#themeToggle').addEventListener('click', async ()=>{
